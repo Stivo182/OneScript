@@ -7,7 +7,7 @@ at http://mozilla.org/MPL/2.0/.
 
 using System;
 using System.IO;
-using System.Net;
+using System.Net.Http;
 using System.Text;
 using OneScript.Contexts;
 using OneScript.StandardLibrary.Binary;
@@ -32,24 +32,24 @@ namespace OneScript.StandardLibrary.Http
         private string _defaultCharset;
         private string _filename;
 
-        public HttpResponseContext(HttpWebResponse response)
+        public HttpResponseContext(HttpResponseMessage response)
         {
             RetrieveResponseData(response, null);
         }
 
-        public HttpResponseContext(HttpWebResponse response, string dumpToFile)
+        public HttpResponseContext(HttpResponseMessage response, string dumpToFile)
         {
             RetrieveResponseData(response, dumpToFile);
         }
 
-        private void RetrieveResponseData(HttpWebResponse response, string dumpToFile)
+        private void RetrieveResponseData(HttpResponseMessage response, string dumpToFile)
         {
             using(response)
             {
                 StatusCode = (int)response.StatusCode;
-                _defaultCharset = response.CharacterSet;
+                _defaultCharset = response.Content.Headers.ContentType?.CharSet;
 
-                ProcessHeaders(response.Headers);
+                ProcessHeaders(response);
                 ProcessResponseBody(response, dumpToFile);
                 if (_body != null && _body.AutoDecompress)
                 {
@@ -58,38 +58,36 @@ namespace OneScript.StandardLibrary.Http
                 }
             }
         }
-
-        private void ProcessHeaders(WebHeaderCollection webHeaderCollection)
+        
+        private void ProcessHeaders(HttpResponseMessage response)
         {
-            foreach (var item in webHeaderCollection.AllKeys)
+            foreach (var item in response.Headers)
             {
-                _headers.Insert(ValueFactory.Create(item), ValueFactory.Create(webHeaderCollection[item]));
+                _headers.Insert(ValueFactory.Create(item.Key), ValueFactory.Create(string.Join(", ", item.Value)));
+            }
+            
+            foreach (var item in response.Content.Headers)
+            {
+                _headers.Insert(ValueFactory.Create(item.Key), ValueFactory.Create(string.Join(", ", item.Value)));
             }
         }
-
-        private void ProcessResponseBody(HttpWebResponse response, string dumpToFile)
+        
+        private void ProcessResponseBody(HttpResponseMessage response, string dumpToFile)
         {
-            if (response.ContentLength == 0)
+            if (response.Content.Headers.ContentLength == 0)
             {
                 _body = null;
                 return;
             }
             _filename = dumpToFile;
             _body = new HttpResponseBody(response, dumpToFile);
-
         }
 
         /// <summary>
         /// Соответствие. Заголовки ответа сервера.
         /// </summary>
         [ContextProperty("Заголовки", "Headers")]
-        public MapImpl Headers
-        {
-            get
-            {
-                return _headers;
-            }
-        }
+        public MapImpl Headers => _headers;
 
         /// <summary>
         /// Код состояния HTTP ответа. Число.

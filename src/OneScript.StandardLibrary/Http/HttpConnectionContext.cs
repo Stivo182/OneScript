@@ -184,7 +184,7 @@ namespace OneScript.StandardLibrary.Http
         }
 
         /// <summary>
-        /// Получает при помощи HEAD-запроса информацию о запрошиваемых данных, содержащуюся в заголовках, не получая сами данные.
+        /// Получает при помощи HEAD-запроса информацию о запрашиваемых данных, содержащуюся в заголовках, не получая сами данные.
         /// </summary>
         /// <param name="request">HTTPЗапрос. Данные и заголовки запроса http</param>
         /// <returns>HTTPОтвет. Ответ сервера.</returns>
@@ -206,67 +206,158 @@ namespace OneScript.StandardLibrary.Http
         {
             return GetResponse(request, method, output);
         }
-
+        
         private static bool ContentBodyAllowed(string method)
         {
             var methods = new List<string> {"GET", "CONNECT", "HEAD"};
             return !methods.Contains(method, StringComparer.OrdinalIgnoreCase);
         }
         
-        private class Range
+        private static void SetRequestBody(HttpRequestContext request, HttpRequestMessage requestMessage)
         {
-            public string RangeSpecifier
+            var stream = request.Body;
+            if (stream != null)
             {
-                get; private set;
-            }
-            public Int64 From
-            {
-                get; private set;
-            }
-            public Int64 To
-            {
-                get; private set;
-            }
-
-            public Range(string rangeSpecifier, Int64 from, Int64 to)
-            {
-                RangeSpecifier = rangeSpecifier;
-                From = from;
-                To = to;
-
+                requestMessage.Content = new StreamContent(stream);
             }
         }
 
-        private static List<Range> ParseRange(string rangeHeader)
+        private static void SetRequestHeaders(HttpRequestContext request, HttpRequestMessage requestMessage)
         {
-            
-            List<Range> range = new List<Range>();
+            foreach (var item in request.Headers.Select(x => x.GetRawValue() as KeyAndValueImpl))
+            {
+                System.Diagnostics.Trace.Assert(item != null);
+
+                var key = item.Key.ToString();
+                var value = item.Value.ToString();
+
+                switch (key.ToUpperInvariant())
+                {
+                    case "CONTENT-TYPE":
+                        if( requestMessage.Content != null)
+                            requestMessage.Content.Headers.ContentType = new MediaTypeHeaderValue(value);
+                        break;
+                    case "CONTENT-LENGTH":
+                        try
+                        {
+                            if( requestMessage.Content != null)
+                                requestMessage.Content.Headers.ContentLength = int.Parse(value);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new RuntimeException("Заголовок Content-Length задан неправильно");
+                        }
+                        break;
+                    case "ACCEPT":
+                        requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(value));
+                        break;
+                    case "EXPECT":
+                        requestMessage.Headers.Expect.Add(new NameValueWithParametersHeaderValue(value));
+                        break;
+                    case "TRANSFER-ENCODING":
+                        requestMessage.Headers.TransferEncoding.Add(new TransferCodingHeaderValue(value));
+                        break;
+                    case "CONNECTION":
+                        if (value.Equals("KEEP-ALIVE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            requestMessage.Headers.ConnectionClose = false;
+                        }
+                        else if (value.Equals("CLOSE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            requestMessage.Headers.ConnectionClose = true;
+                        }
+                        else
+                        {
+                            requestMessage.Headers.Connection.Add(value);
+                        }
+                        break;
+                    case "DATE":
+                        try 
+	                    {	        
+                            requestMessage.Headers.Date = DateTime.Parse(value);
+	                    }
+	                    catch (FormatException)
+	                    {
+		                    throw new RuntimeException("Заголовок Date задан неправильно");
+	                    }
+                        break;
+                    case "HOST":
+                        requestMessage.Headers.Host = value;
+                        break;
+                    case "IF-MODIFIED-SINCE":
+                        try
+                        {
+                            requestMessage.Headers.IfModifiedSince = DateTime.Parse(value);
+                        }
+                        catch (FormatException)
+                        {
+                            throw new RuntimeException("Заголовок If-Modified-Since задан неправильно");
+                        }
+                        break;
+                    case "RANGE":
+                        try
+                        {
+                            var rangeHeaderValue = ParseRange(value);
+                            if (rangeHeaderValue.Ranges.Count > 0)
+                                requestMessage.Headers.Range = rangeHeaderValue;
+                        }
+                        catch
+                        {
+                            throw new RuntimeException("Заголовок Range задан неправильно");
+                        }
+                        break;
+                    case "REFERER":
+                        requestMessage.Headers.Referrer = new Uri(value);
+                        break;
+                    case "USER-AGENT":
+                        requestMessage.Headers.UserAgent.Add(new ProductInfoHeaderValue(value));
+                        break;
+                    case "PROXY-CONNECTION":
+                        throw new NotImplementedException();
+                    default:
+                        requestMessage.Headers.Add(key, value);
+                        break;
+                           
+                }
+
+                // fix #1151
+                if (!requestMessage.Headers.UserAgent.Any())
+                {
+                    var agent = new ProductInfoHeaderValue("1Script",
+                        Assembly.GetExecutingAssembly().GetName().Version?.ToString());
+                    requestMessage.Headers.UserAgent.Add(agent);
+                }
+
+            }
+        }
+        
+        private static RangeHeaderValue ParseRange(string rangeHeader)
+        {
+            var range = new RangeHeaderValue();
 
             if (rangeHeader.Length == 0)
                 return range;
 
             RegExp.MatchCollection matches = RegExp.Regex.Matches(rangeHeader, @"^(.+)=([^;]+)");
 
-            string rangeSpecifier = matches[0].Groups[1].Value;
+            range.Unit = matches[0].Groups[1].Value;
 
-            string stringrange = matches[0].Groups[2].Value;
-
-            string[] ranges = stringrange.Split(',');
+            string stringRange = matches[0].Groups[2].Value;
+            string[] ranges = stringRange.Split(',');
 
             for (int i = 0; i < ranges.Length; i++)
             {
-                string range_spec = ranges[i].Trim();
+                string rangeSpec = ranges[i].Trim();
                 
                 Int64 from = 0;
-                Int64 to = 0;
-                RegExp.MatchCollection fromMatches = RegExp.Regex.Matches(range_spec, @"^(\d+)\-$");
-                RegExp.MatchCollection fromToMatches = RegExp.Regex.Matches(range_spec, @"^(\d+)\-(\d+)$");
-                RegExp.MatchCollection toMatches = RegExp.Regex.Matches(range_spec, @"^\-(\d+)$");
+                Int64? to = null;
+                RegExp.MatchCollection fromMatches = RegExp.Regex.Matches(rangeSpec, @"^(\d+)\-$");
+                RegExp.MatchCollection fromToMatches = RegExp.Regex.Matches(rangeSpec, @"^(\d+)\-(\d+)$");
+                RegExp.MatchCollection toMatches = RegExp.Regex.Matches(rangeSpec, @"^\-(\d+)$");
 
                 if (fromMatches.Count > 0)
                 {
                     from = Int64.Parse(fromMatches[0].Groups[1].Value);
-                    to = 0;
                 }
                 else if (fromToMatches.Count > 0)
                 {
@@ -276,39 +367,23 @@ namespace OneScript.StandardLibrary.Http
                 else if (toMatches.Count > 0)
                 {
                     from = Int64.Parse(toMatches[0].Groups[1].Value);
-                    to = 0;
                 }
-                range.Add(new Range(rangeSpecifier, from, to));
+                range.Ranges.Add(new RangeItemHeaderValue(from, to));
             }
             return range;
         }
-
+        
         private HttpResponseContext GetResponse(HttpRequestContext request, string method, string output = null)
         {
-            var client = CreateClient();
-            var requestMessage = CreateRequest(method, request.ResourceAddress);
-
-            SetRequestHeaders(request, requestMessage);
+            HttpClient client = CreateClient();
+            HttpRequestMessage requestMessage = CreateRequest(method, request.ResourceAddress);
             
             if (ContentBodyAllowed(method)) 
                 SetRequestBody(request, requestMessage);
             
-            HttpWebResponse response;
+            SetRequestHeaders(request, requestMessage);
 
-            try
-            {
-                response = (HttpWebResponse)webRequest.GetResponse();
-            }
-            catch (WebException ex)
-            {
-                if (ex.Status == WebExceptionStatus.ProtocolError && ex.Response != null)
-                    response = (HttpWebResponse)ex.Response;
-                else
-                    throw;
-            }
-
-            client.Dispose();
-
+            HttpResponseMessage response = client.Send(requestMessage);
             var responseContext = new HttpResponseContext(response, output);
             
             return responseContext;
@@ -378,125 +453,6 @@ namespace OneScript.StandardLibrary.Http
             }
             
             return request;           
-        }
-
-        private static void SetRequestBody(HttpRequestContext request, HttpRequestMessage requestMessage)
-        {
-            var stream = request.Body;
-            if (stream != null)
-            {
-                requestMessage.Content = new StreamContent(stream);
-            }
-        }
-
-        private static void SetRequestHeaders(HttpRequestContext request, HttpRequestMessage requestMessage)
-        {
-            foreach (var item in request.Headers.Select(x => x.GetRawValue() as KeyAndValueImpl))
-            {
-                System.Diagnostics.Trace.Assert(item != null);
-
-                var key = item.Key.ToString();
-                var value = item.Value.ToString();
-
-                switch (key.ToUpperInvariant())
-                {
-                    case "CONTENT-TYPE":
-                        webRequest.ContentType = value;
-                        break;
-                    case "CONTENT-LENGTH":
-                        try
-                        {
-                            webRequest.ContentLength = Int32.Parse(value);
-                        }
-                        catch (FormatException)
-                        {
-                            throw new RuntimeException("Заголовок Content-Length задан неправильно");
-                        }
-                        break;
-                    case "ACCEPT":
-                        webRequest.Accept = value;
-                        break;
-                    case "EXPECT":
-                        webRequest.Expect = value;
-                        break;
-                    case "TRANSFER-ENCODING":
-                        webRequest.TransferEncoding = value;
-                        break;
-                    case "CONNECTION":
-                        if (value.Equals("KEEP-ALIVE", StringComparison.OrdinalIgnoreCase))
-                        {
-                            webRequest.KeepAlive = true;
-                        }
-                        else if (value.Equals("CLOSE", StringComparison.OrdinalIgnoreCase))
-                        {
-                            webRequest.KeepAlive = false;
-                        }
-                        else
-                        {
-                            webRequest.Connection = value;
-                        }
-                        break;
-                    case "DATE":
-                        try 
-	                    {	        
-		                    webRequest.Date = DateTime.Parse(value);
-	                    }
-	                    catch (FormatException)
-	                    {
-		                    throw new RuntimeException("Заголовок Date задан неправильно");
-	                    }
-                        break;
-                    case "HOST":
-                        webRequest.Host = value;
-                        break;
-                    case "IF-MODIFIED-SINCE":
-                        try
-                        {
-                            webRequest.IfModifiedSince = DateTime.Parse(value);
-                        }
-                        catch (FormatException)
-                        {
-                            throw new RuntimeException("Заголовок If-Modified-Since задан неправильно");
-                        }
-                        break;
-                    case "RANGE":
-                        try
-                        {
-                            List<Range> range_list = ParseRange(value);
-                            foreach (Range range in range_list)
-                            {
-                                if (range.To == 0)
-                                    webRequest.AddRange(range.RangeSpecifier, range.From);
-                                else
-                                    webRequest.AddRange(range.RangeSpecifier, range.From, range.To);
-                            }
-                        }
-                        catch
-                        {
-                            throw new RuntimeException("Заголовок Range задан неправильно");
-                        }
-                        break;
-                    case "REFERER":
-                        webRequest.Referer = value;
-                        break;
-                    case "USER-AGENT":
-                        webRequest.UserAgent = value;
-                        break;
-                    case "PROXY-CONNECTION":
-                        throw new NotImplementedException();
-                    default:
-                        webRequest.Headers.Set(key, value);
-                        break;
-                           
-                }
-
-                // fix #1151
-                if (webRequest.UserAgent == default)
-                {
-                    webRequest.UserAgent = $"1Script v${Assembly.GetExecutingAssembly().GetName().Version}";
-                }
-
-            }
         }
 
         /// <summary>

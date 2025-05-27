@@ -8,7 +8,7 @@ at http://mozilla.org/MPL/2.0/.
 using System;
 using System.IO;
 using System.IO.Compression;
-using System.Net;
+using System.Linq;
 using System.Net.Http;
 
 namespace OneScript.StandardLibrary.Http
@@ -26,16 +26,20 @@ namespace OneScript.StandardLibrary.Http
         private readonly bool _autoDecompress; 
         private long _contentSize = 0;
 
-        public HttpResponseBody(HttpWebResponse response, string dumpToFile)
+        public HttpResponseBody(HttpResponseMessage response, string dumpToFile)
         {
-            if (response.Method == HttpMethod.Head.Method)
+            var headers = response.Content.Headers;
+            var length = headers.ContentLength ?? 0;
+            var encoding = headers.ContentEncoding.First();
+            
+            if (length == 0)
             {
                 _inMemBody = Array.Empty<byte>();
                 return;
             }
             
-            _autoDecompress = string.Equals(response.ContentEncoding, "gzip", StringComparison.OrdinalIgnoreCase);
-            _contentSize = _autoDecompress ? -1 : response.ContentLength;
+            _autoDecompress = string.Equals(encoding, "gzip", StringComparison.OrdinalIgnoreCase);
+            _contentSize = _autoDecompress ? -1 : length;
 
             if (String.IsNullOrEmpty(dumpToFile))
             {
@@ -44,27 +48,6 @@ namespace OneScript.StandardLibrary.Http
             else
             {
                 InitFileBackedResponse(response, dumpToFile);
-            }
-        }
-
-        private void InitInMemoryResponse(HttpWebResponse response)
-        {
-            if(_contentSize > INMEMORY_BODY_LIMIT)
-            {
-                var filename = Path.GetTempFileName();
-                _backFileIsTemp = true;
-                InitFileBackedResponse(response, filename);
-            }
-            else
-            {
-                if(_contentSize == UNDEFINED_LENGTH)
-                {
-                    ReadToStream(response);
-                }
-                else
-                {
-                    ReadToArray(response);
-                }
             }
         }
 
@@ -86,14 +69,35 @@ namespace OneScript.StandardLibrary.Http
                 throw new InvalidOperationException("No response body");
         }
 
-        private Stream GetResponseStream(HttpWebResponse response)
+        private void InitInMemoryResponse(HttpResponseMessage response)
         {
-            if (_autoDecompress)
-                return new GZipStream(response.GetResponseStream(), CompressionMode.Decompress);
-            return response.GetResponseStream();
+            if(_contentSize > INMEMORY_BODY_LIMIT)
+            {
+                var filename = Path.GetTempFileName();
+                _backFileIsTemp = true;
+                InitFileBackedResponse(response, filename);
+            }
+            else
+            {
+                if(_contentSize == UNDEFINED_LENGTH)
+                {
+                    ReadToStream(response);
+                }
+                else
+                {
+                    ReadToArray(response);
+                }
+            }
         }
         
-        private void ReadToStream(HttpWebResponse response)
+        private Stream GetResponseStream(HttpResponseMessage response)
+        {
+            if (_autoDecompress)
+                return new GZipStream(response.Content.ReadAsStream(), CompressionMode.Decompress);
+            return response.Content.ReadAsStream();
+        }
+        
+        private void ReadToStream(HttpResponseMessage response)
         {
             using (var responseStream = GetResponseStream(response))
             using(var ms = new MemoryStream())
@@ -144,7 +148,7 @@ namespace OneScript.StandardLibrary.Http
             }
         }
 
-        private void ReadToArray(HttpWebResponse response)
+        private void ReadToArray(HttpResponseMessage response)
         {
             System.Diagnostics.Debug.Assert(_contentSize <= INMEMORY_BODY_LIMIT);
             
@@ -166,7 +170,7 @@ namespace OneScript.StandardLibrary.Http
             }
         }
 
-        private void InitFileBackedResponse(HttpWebResponse response, string backingFileName)
+        private void InitFileBackedResponse(HttpResponseMessage response, string backingFileName)
         {
             _backingFileName = backingFileName;
             using(var responseStream = GetResponseStream(response))
