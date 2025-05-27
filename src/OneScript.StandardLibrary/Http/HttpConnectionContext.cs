@@ -9,7 +9,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Authentication;
 using System.Text;
 using OneScript.Contexts;
 using OneScript.Exceptions;
@@ -204,61 +207,6 @@ namespace OneScript.StandardLibrary.Http
             return GetResponse(request, method, output);
         }
 
-        private HttpWebRequest CreateRequest(string resource)
-        {
-            var uriBuilder = new UriBuilder(_hostUri);
-            if(Port != 0)
-                uriBuilder.Port = Port;
-            
-            var resourceUri = new Uri(uriBuilder.Uri, resource);
-
-            // http://qaru.site/questions/45913/the-request-was-aborted-could-not-create-ssltls-secure-channel
-            // Убедитесь, что настройки ServicePointManager заданы до создания HttpWebRequest, 
-            // иначе он не будет работать
-            if (uriBuilder.Scheme == HTTPS_SCHEME)
-            {
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls12;
-            }
-
-            var request = (HttpWebRequest)HttpWebRequest.Create(resourceUri);
-            if (User != "" || Password != "")
-            {
-                request.Credentials = new NetworkCredential(User, Password);
-                //request.PreAuthenticate = true;
-                // Авторизация на сервере 1С:Предприятие, например, не работает без явного указания заголовка.
-                // http://blog.kowalczyk.info/article/at3/Forcing-basic-http-authentication-for-HttpWebReq.html
-                string authInfo = User + ":" + Password;
-                // Для 1С работает только UTF-8, хотя стандарт требует ISO-8859-1
-                var basicAuthEncoding = Encoding.GetEncoding("UTF-8");
-                authInfo = Convert.ToBase64String(basicAuthEncoding.GetBytes(authInfo));
-                request.Headers["Authorization"] = "Basic " + authInfo;
-            }
-            else if(UseOSAuthentication)
-            {
-                request.Credentials = CredentialCache.DefaultNetworkCredentials;
-            }
-
-            if(_proxy != null)
-                request.Proxy = _proxy.GetProxy(uriBuilder.Scheme);
-
-            if (Timeout == 0)
-            {
-                request.Timeout = System.Threading.Timeout.Infinite;
-            }
-            else
-            {
-                request.Timeout = Timeout * 1000;
-            }
-
-            if (uriBuilder.Scheme == HTTPS_SCHEME)
-            {
-                request.ServerCertificateValidationCallback = delegate { return true; };
-            }
-
-            return request;
-            
-        }
-
         private static bool ContentBodyAllowed(string method)
         {
             var methods = new List<string> {"GET", "CONNECT", "HEAD"};
@@ -335,16 +283,16 @@ namespace OneScript.StandardLibrary.Http
             return range;
         }
 
-    private HttpResponseContext GetResponse(HttpRequestContext request, string method, string output = null)
+        private HttpResponseContext GetResponse(HttpRequestContext request, string method, string output = null)
         {
-            var webRequest = CreateRequest(request.ResourceAddress);
-            webRequest.AllowAutoRedirect = AllowAutoRedirect;
-            webRequest.Method = method;
-            SetRequestHeaders(request, webRequest);
+            var client = CreateClient();
+            var requestMessage = CreateRequest(method, request.ResourceAddress);
+
+            SetRequestHeaders(request, requestMessage);
             
             if (ContentBodyAllowed(method)) 
-                SetRequestBody(request, webRequest);
-
+                SetRequestBody(request, requestMessage);
+            
             HttpWebResponse response;
 
             try
@@ -359,33 +307,89 @@ namespace OneScript.StandardLibrary.Http
                     throw;
             }
 
+            client.Dispose();
+
             var responseContext = new HttpResponseContext(response, output);
             
             return responseContext;
+        }
+        
+        private HttpClient CreateClient()
+        {
+            var uriBuilder = new UriBuilder(_hostUri);
+            var handler = new HttpClientHandler();
+            
+            handler.AllowAutoRedirect = AllowAutoRedirect;
 
+            if (User != "" || Password != "")
+            {
+                handler.Credentials = new NetworkCredential(User, Password);
+            }
+            else if (UseOSAuthentication)
+            {
+                handler.Credentials = CredentialCache.DefaultNetworkCredentials;
+            }
+
+            if (_proxy != null)
+            {
+                handler.Proxy = _proxy.GetProxy(uriBuilder.Scheme);
+            }
+
+            if (uriBuilder.Scheme == HTTPS_SCHEME)
+            {
+                handler.SslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
+                
+                // OS
+                ServicePointManager.ServerCertificateValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
+            }
+
+            var client = new HttpClient(handler);
+          
+            if (Timeout == 0)
+            {
+                client.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
+            }
+            else
+            {
+                client.Timeout = TimeSpan.FromSeconds(Timeout);
+            }
+            
+            return client;
+        }
+        
+        private HttpRequestMessage CreateRequest(string method, string resource)
+        {
+            var uriBuilder = new UriBuilder(_hostUri);
+            if(Port != 0)
+                uriBuilder.Port = Port;
+            
+            var resourceUri = new Uri(uriBuilder.Uri, resource);
+            var request = new HttpRequestMessage(new HttpMethod(method), resourceUri);
+
+            // Авторизация на сервере 1С:Предприятие, например, не работает без явного указания заголовка.
+            // http://blog.kowalczyk.info/article/at3/Forcing-basic-http-authentication-for-HttpWebReq.html
+            if (User != "" || Password != "")
+            {
+                string authInfo = User + ":" + Password;
+                // Для 1С работает только UTF-8, хотя стандарт требует ISO-8859-1
+                var basicAuthEncoding = Encoding.GetEncoding("UTF-8");
+                authInfo = Convert.ToBase64String(basicAuthEncoding.GetBytes(authInfo));
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authInfo);
+            }
+            
+            return request;           
         }
 
-        private static void SetRequestBody(HttpRequestContext request, HttpWebRequest webRequest)
+        private static void SetRequestBody(HttpRequestContext request, HttpRequestMessage requestMessage)
         {
             var stream = request.Body;
-            if (stream == null)
+            if (stream != null)
             {
-                return; // тело не установлено
-            }
-
-            using(stream)
-            {
-                if (stream.CanSeek)
-                    webRequest.ContentLength = stream.Length;
-
-                using(var requestStream = webRequest.GetRequestStream())
-                {
-                    stream.CopyTo(requestStream);
-                }
+                requestMessage.Content = new StreamContent(stream);
             }
         }
 
-        private static void SetRequestHeaders(HttpRequestContext request, HttpWebRequest webRequest)
+        private static void SetRequestHeaders(HttpRequestContext request, HttpRequestMessage requestMessage)
         {
             foreach (var item in request.Headers.Select(x => x.GetRawValue() as KeyAndValueImpl))
             {
