@@ -319,15 +319,14 @@ namespace OneScript.StandardLibrary.Http
                         break;
                            
                 }
+            }
 
-                // fix #1151
-                if (!requestMessage.Headers.UserAgent.Any())
-                {
-                    var agent = new ProductInfoHeaderValue("1Script",
-                        Assembly.GetExecutingAssembly().GetName().Version?.ToString());
-                    requestMessage.Headers.UserAgent.Add(agent);
-                }
-
+            // fix #1151
+            if (!requestMessage.Headers.UserAgent.Any())
+            {
+                var agent = new ProductInfoHeaderValue("1Script",
+                    Assembly.GetExecutingAssembly().GetName().Version?.ToString());
+                requestMessage.Headers.UserAgent.Add(agent);
             }
         }
         
@@ -375,17 +374,17 @@ namespace OneScript.StandardLibrary.Http
         
         private HttpResponseContext GetResponse(HttpRequestContext request, string method, string output = null)
         {
-            HttpClient client = CreateClient();
             HttpRequestMessage requestMessage = CreateRequest(method, request.ResourceAddress);
             
             if (ContentBodyAllowed(method)) 
                 SetRequestBody(request, requestMessage);
             
             SetRequestHeaders(request, requestMessage);
-
+            
+            using HttpClient client = CreateClient();
             HttpResponseMessage response = client.Send(requestMessage);
             var responseContext = new HttpResponseContext(response, output);
-            
+
             return responseContext;
         }
         
