@@ -413,8 +413,6 @@ namespace OneScript.StandardLibrary.Http
             if (uriBuilder.Scheme == HTTPS_SCHEME)
             {
                 handler.SslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
-                
-                // OS
                 ServicePointManager.ServerCertificateValidationCallback += (sender, cert, chain, sslPolicyErrors) => true;
             }
 
@@ -440,11 +438,11 @@ namespace OneScript.StandardLibrary.Http
             
             var resourceUri = new Uri(uriBuilder.Uri, resource);
             var request = new HttpRequestMessage(new HttpMethod(method), resourceUri);
-
-            // Авторизация на сервере 1С:Предприятие, например, не работает без явного указания заголовка.
-            // http://blog.kowalczyk.info/article/at3/Forcing-basic-http-authentication-for-HttpWebReq.html
+            
             if (User != "" || Password != "")
             {
+                // Авторизация на сервере 1С:Предприятие, например, не работает без явного указания заголовка.
+                // http://blog.kowalczyk.info/article/at3/Forcing-basic-http-authentication-for-HttpWebReq.html
                 string authInfo = User + ":" + Password;
                 // Для 1С работает только UTF-8, хотя стандарт требует ISO-8859-1
                 var basicAuthEncoding = Encoding.GetEncoding("UTF-8");
