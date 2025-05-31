@@ -30,7 +30,7 @@ namespace OneScript.StandardLibrary.Http
         {
             var headers = response.Content.Headers;
             var length = headers.ContentLength ?? 0;
-            var encoding = headers.ContentEncoding.First();
+            var encoding = headers.ContentEncoding.FirstOrDefault() ?? "";
             
             if (length == 0)
             {
