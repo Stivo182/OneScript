@@ -348,8 +348,7 @@ namespace OneScript.StandardLibrary.Http
             {
                 string rangeSpec = ranges[i].Trim();
                 
-                Int64 from = 0;
-                Int64? to = null;
+                Int64? from = null, to = null;
                 RegExp.MatchCollection fromMatches = RegExp.Regex.Matches(rangeSpec, @"^(\d+)\-$");
                 RegExp.MatchCollection fromToMatches = RegExp.Regex.Matches(rangeSpec, @"^(\d+)\-(\d+)$");
                 RegExp.MatchCollection toMatches = RegExp.Regex.Matches(rangeSpec, @"^\-(\d+)$");
@@ -365,7 +364,7 @@ namespace OneScript.StandardLibrary.Http
                 }
                 else if (toMatches.Count > 0)
                 {
-                    from = Int64.Parse(toMatches[0].Groups[1].Value);
+                    to = Int64.Parse(toMatches[0].Groups[1].Value);
                 }
                 range.Ranges.Add(new RangeItemHeaderValue(from, to));
             }
