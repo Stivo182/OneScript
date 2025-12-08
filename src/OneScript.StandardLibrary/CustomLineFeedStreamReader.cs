@@ -12,133 +12,170 @@ using System.Text;
 
 namespace OneScript.StandardLibrary
 {
-
     public class CustomLineFeedStreamReader : IDisposable
     {
         private TextReader _reader;
         private readonly string _eolDelimiter;
-        private Queue<char> _buffer = new Queue<char> ();
-        private bool _analyzeDefaults = false;
+        private readonly char[] _buffer;
+        private int _bufferPosition;
+        private int _bufferLength;
+        private bool _analyzeDefaults;
 
-        public CustomLineFeedStreamReader (TextReader underlyingReader, string eolDelimiter, bool analyzeDefaults)
+        private const int DefaultBufferSize = 4096;
+
+        public CustomLineFeedStreamReader(TextReader underlyingReader, string eolDelimiter, bool analyzeDefaults)
         {
-            if(underlyingReader == null)
-                throw new ArgumentNullException(nameof(underlyingReader));
-            if(eolDelimiter == null)
-                throw new ArgumentNullException(nameof(eolDelimiter));
+            _reader = underlyingReader ?? throw new ArgumentNullException(nameof(underlyingReader));
+            _eolDelimiter = eolDelimiter ?? throw new ArgumentNullException(nameof(eolDelimiter));
             
-            _reader = underlyingReader;
-            _eolDelimiter = eolDelimiter;
+            _buffer = new char[Math.Max(DefaultBufferSize, eolDelimiter.Length * 2)];
+            _bufferPosition = 0;
+            _bufferLength = 0; 
             _analyzeDefaults = analyzeDefaults;
         }
 
-        private void UpdateCharQueue (int minimalLentgh = 1)
+        private void EnsureBuffer(int minimalLength)
         {
-            while (_buffer.Count < minimalLentgh) {
-                int ic = _reader.Read ();
-                if (ic == -1)
-                    break;
-                _buffer.Enqueue ((char)ic);
+            if (_bufferPosition + minimalLength <= _bufferLength)
+                return;
+
+            // Сдвигаем оставшиеся символы в начало буфера
+            if (_bufferPosition > 0)
+            {
+                Array.Copy(_buffer, _bufferPosition, _buffer, 0, _bufferLength - _bufferPosition);
+                _bufferLength -= _bufferPosition;
+                _bufferPosition = 0;
+            }
+
+            // Читаем новые символы
+            while (_bufferLength < _buffer.Length && _bufferLength < minimalLength)
+            {
+                int readCount = _reader.Read(_buffer, _bufferLength, _buffer.Length - _bufferLength);
+                if (readCount == 0) break;
+                _bufferLength += readCount;
             }
         }
 
-        public int Read ()
+        public int Read()
         {
-            if (_buffer.Count == 0)
+            if (_bufferPosition >= _bufferLength)
             {
-                UpdateCharQueue ();
-                if (_buffer.Count == 0)
+                EnsureBuffer(1);
+                if (_bufferPosition >= _bufferLength)
                     return -1;
             }
 
-            if (_analyzeDefaults && _buffer.Peek () == '\r') {
+            char currentChar = _buffer[_bufferPosition];
 
-                _buffer.Dequeue ();
-                UpdateCharQueue ();
+            // Обработка стандартных разделителей строк
+            if (_analyzeDefaults && currentChar == '\r')
+            {
+                _bufferPosition++;
+                EnsureBuffer(1);
 
-                if (_buffer.Count > 0 && _buffer.Peek () == '\n') {
-                    _buffer.Dequeue ();
-                    UpdateCharQueue ();
+                if (_bufferPosition < _bufferLength && _buffer[_bufferPosition] == '\n')
+                {
+                    _bufferPosition++;
+                    return '\n';
                 }
-
                 return '\n';
             }
 
-            if (_eolDelimiter.Length > 0 && _buffer.Peek() == _eolDelimiter [0])
+            // Проверка пользовательского разделителя
+            if (_eolDelimiter.Length > 0 && currentChar == _eolDelimiter[0])
             {
-                UpdateCharQueue (_eolDelimiter.Length);
-
-                var eolIndex = 0;
-                foreach (var bufChar in _buffer)
+                if (CheckEolDelimiter())
                 {
-                    if (bufChar != _eolDelimiter[eolIndex])
-                        break;
-
-                    ++eolIndex;
-
-                    if (eolIndex == _eolDelimiter.Length)
-                    {
-                        while (eolIndex > 0)
-                        {
-                            _buffer.Dequeue();
-                            --eolIndex;
-                        }
-
-                        return '\n';
-                    }
+                    return '\n';
                 }
             }
 
-            return _buffer.Dequeue ();
+            _bufferPosition++;
+            return currentChar;
+        }
+
+        private bool CheckEolDelimiter()
+        {
+            EnsureBuffer(_eolDelimiter.Length);
+
+            if (_bufferPosition + _eolDelimiter.Length > _bufferLength)
+                return false;
+
+            for (int i = 0; i < _eolDelimiter.Length; i++)
+            {
+                if (_buffer[_bufferPosition + i] != _eolDelimiter[i])
+                    return false;
+            }
+
+            _bufferPosition += _eolDelimiter.Length;
+            return true;
         }
 
         public string ReadUntil(string endOfString, out bool eosMet)
-        {
-            var sb = new StringBuilder ();
+        {   
+            if (string.IsNullOrEmpty(endOfString))
+            {
+                eosMet = false;
+                return ReadToEnd();
+            }
+
+            var sb = new StringBuilder();
             eosMet = false;
 
-            while (!eosMet) {
-                var ic = Read ();
-                if (ic == -1) {
-                    break;
-                }
+            while (!eosMet)
+            {
+                int ic = Read();
+                if (ic == -1) break;
 
-                var c = (char)ic;
+                char c = (char)ic;
+                sb.Append(c);
 
-                sb.Append (c);
-
-                if (endOfString.Length > 0 && c == endOfString [endOfString.Length - 1]) {
-                    if (sb.Length >= endOfString.Length) {
-
-                        var substring = sb.ToString (sb.Length - endOfString.Length, endOfString.Length);
-                        if (substring.Equals (endOfString, StringComparison.InvariantCulture)) {
-                            eosMet = true;
-                            sb.Remove (sb.Length - endOfString.Length, endOfString.Length);
-                        }
-
+                // Оптимизированная проверка окончания строки
+                if (c == endOfString[endOfString.Length - 1] && sb.Length >= endOfString.Length)
+                {
+                    if (EndsWith(sb, endOfString))
+                    {
+                        eosMet = true;
+                        sb.Length -= endOfString.Length;
                     }
                 }
             }
 
-            if (sb.Length == 0 && !eosMet)
-                return null;
-            return sb.ToString ();
+            return sb.Length == 0 && !eosMet ? null : sb.ToString();
         }
 
-        public string ReadLine (string lineDelimiter)
+        private bool EndsWith(StringBuilder sb, string endString)
+        {
+            int startIndex = sb.Length - endString.Length;
+            for (int i = 0; i < endString.Length; i++)
+            {
+                if (sb[startIndex + i] != endString[i])
+                    return false;
+            }
+            return true;
+        }
+
+        public string ReadLine(string lineDelimiter)
         {
             bool eol;
-            var l = ReadUntil (lineDelimiter, out eol);
-            return l;
+            return ReadUntil(lineDelimiter, out eol);
         }
 
-        public void Dispose ()
-        {
-            if (_reader != null) {
-                _reader.Dispose ();
-                _reader = null;
+        public string ReadToEnd()
+        {           
+            var sb = new StringBuilder();
+            int ch;
+            while ((ch = Read()) != -1)
+            {
+                sb.Append((char)ch);
             }
+            return sb.ToString();
+        }
+
+        public void Dispose()
+        {
+            _reader?.Dispose();
+            _reader = null;
         }
     }
-    
 }
