@@ -23,6 +23,8 @@ namespace OneScript.StandardLibrary.Text
     public class TextWriteImpl : AutoContext<TextWriteImpl>, IDisposable
     {
         StreamWriter _writer;
+        IStreamWrapper _streamWrapper;
+        Encoding _encoding;
         string _lineDelimiter = "";
         string _eolReplacement = "";
 
@@ -30,17 +32,22 @@ namespace OneScript.StandardLibrary.Text
         {
 
         }
-
+        
         public TextWriteImpl(string path, IValue encoding)
         {
-            Open(path, encoding);
+            Open(ValueFactory.Create(path), encoding);
         }
 
         public TextWriteImpl(string path, IValue encoding, bool append)
         {
-            Open(path, encoding, null, append);
+            Open(ValueFactory.Create(path), encoding, null, ValueFactory.Create(append));
         }
 
+        public TextWriteImpl(IValue stream, IValue encoding, IValue writeBom)
+        {
+            Open(stream, encoding, null, null, writeBom);
+        }
+        
         /// <summary>
         /// Открывает файл или устанавливает поток для записи.
         /// </summary>
@@ -67,23 +74,23 @@ namespace OneScript.StandardLibrary.Text
         [ContextMethod("Открыть", "Open")]
         public void Open(IValue fileOrStream, IValue encoding = null, string lineDelimiter = null, IValue param4 = null, IValue param5 = null)
         {
-            if (fileOrStream.SystemType == BasicTypes.String)
+            if (fileOrStream is IStreamWrapper streamWrapper)
             {
-                Open(
+                OpenStream(
+                    streamWrapper,
+                    encoding,
+                    lineDelimiter,
+                    ContextValuesMarshaller.ConvertValueStrict<string>(param4),
+                    ContextValuesMarshaller.ConvertValueStrict<bool>(param5));
+            }
+            else
+            {
+                OpenFile(
                     fileOrStream.ToString(),
                     encoding,
                     lineDelimiter,
                     ContextValuesMarshaller.ConvertValueStrict<bool>(param4),
                     ContextValuesMarshaller.ConvertValueStrict<string>(param5));
-            }
-            else
-            {
-                Open(
-                    fileOrStream, 
-                    encoding,
-                    lineDelimiter,
-                    ContextValuesMarshaller.ConvertValueStrict<string>(param4),
-                    ContextValuesMarshaller.ConvertValueStrict<bool>(param5));
             }
         }
 
@@ -100,10 +107,8 @@ namespace OneScript.StandardLibrary.Text
         [ContextMethod("Записать", "Write")]
         public void Write(string what)
         {
-            ThrowIfNotOpened();
-            ThrowIfClosedStream();
-            ThrowIfNonWritableStream();
-
+            PrepareForWriting();
+            
             var stringToOutput = what.Replace ("\n", _eolReplacement);
             
             _writer.Write(stringToOutput);
@@ -117,36 +122,20 @@ namespace OneScript.StandardLibrary.Text
         [ContextMethod("ЗаписатьСтроку", "WriteLine")]
         public void WriteLine(IBslProcess process, string what, BslValue delimiter = null)
         {
-            ThrowIfNotOpened();
-            ThrowIfClosedStream();
-            ThrowIfNonWritableStream();
-
-            Write (what);
+            Write(what);
 
             var sDelimiter = _lineDelimiter;
             if (delimiter != null && delimiter.SystemType != BasicTypes.Undefined)
                 sDelimiter = delimiter.ToString(process);
 
-            Write (sDelimiter);
+            Write(sDelimiter);
         }
 
         public void ThrowIfNotOpened()
         {
             if (_writer == null)
                 throw new RuntimeException("Файл не открыт");
-        }
- 
-        private void ThrowIfClosedStream()
-        {
-            if (_writer.BaseStream is { CanWrite: false, CanRead: false })
-                throw RuntimeException.ClosedStream();
-        }           
-
-        private void ThrowIfNonWritableStream()
-        {
-            if (_writer.BaseStream is { CanWrite: false, CanRead: true })
-                throw RuntimeException.NonWritableStream();
-        }    
+        }  
         
         public void Dispose()
         {
@@ -155,13 +144,49 @@ namespace OneScript.StandardLibrary.Text
                 _writer.Dispose();
                 _writer = null;
             }
+
+            _streamWrapper = null;
+        }
+        
+        private void PrepareForWriting()
+        {
+            ThrowIfClosedStream();
+            ThrowIfNonWritableStream();
+            
+            if (_writer == null && _streamWrapper != null)
+            {
+                _writer = new StreamWriter(_streamWrapper.GetUnderlyingStream(), _encoding, -1, true);
+                _writer.AutoFlush = true;
+            }
+            
+            ThrowIfNotOpened();
         }
 
-        private void Open(string path, IValue encoding = null, string lineDelimiter = null, bool append = false, string eolReplacement = null)
+        private void OpenFile(string path, IValue encoding = null, string lineDelimiter = null, bool append = false, string eolReplacement = null)
         {
+            Dispose();
+            
             _lineDelimiter = lineDelimiter ?? "\n";
             _eolReplacement = eolReplacement ?? "\r\n";
+            _encoding = ResolveEncodingForFile(encoding, append);
+            _streamWrapper = null;
 
+            _writer = new StreamWriter(path, append, _encoding);
+            _writer.AutoFlush = true;
+        }
+
+        private void OpenStream(IStreamWrapper streamWrapper, IValue encoding = null, string lineDelimiter = null, string eolReplacement = null, bool writeBom = false)
+        {
+            Dispose();
+            
+            _lineDelimiter = lineDelimiter ?? "\n";
+            _eolReplacement = eolReplacement ?? "\r\n";
+            _encoding = ResolveEncodingForStream(encoding, writeBom);
+            _streamWrapper = streamWrapper;
+        }
+        
+        private Encoding ResolveEncodingForFile(IValue encoding, bool append)
+        {
             Encoding enc;
             if (encoding == null)
             {
@@ -173,34 +198,36 @@ namespace OneScript.StandardLibrary.Text
                 if (enc.WebName == "utf-8" && append == true)
                     enc = new UTF8Encoding(false);
             }
-
-            _writer = new StreamWriter(path, append, enc);
-            _writer.AutoFlush = true; 
+            return enc;
         }
-
-        private void Open(IValue stream, IValue encoding = null, string lineDelimiter = null, string eolReplacement = null, bool writeBom = false)
+        
+        private Encoding ResolveEncodingForStream(IValue encoding, bool writeBom)
         {
-            _lineDelimiter = lineDelimiter ?? "\n";
-            _eolReplacement = eolReplacement ?? "\r\n";
-            
-            if (!(stream.AsObject() is IStreamWrapper streamObj))
-            {
-                throw RuntimeException.InvalidArgumentType(nameof(stream));
-            }
-
-            Encoding enc;
             if (encoding == null)
             {
-                enc = new UTF8Encoding(writeBom);
+                return new UTF8Encoding(writeBom);
             }
             else
             {
-                enc = TextEncodingEnum.GetEncoding(encoding, writeBom);
+                return TextEncodingEnum.GetEncoding(encoding, writeBom);
             }
-
-            _writer = new StreamWriter(streamObj.GetUnderlyingStream(), enc, -1, true);
-            _writer.AutoFlush = true;
         }
+        
+        private void ThrowIfClosedStream()
+        {
+            if (_streamWrapper != null)
+            {
+                var stream = _streamWrapper.GetUnderlyingStream();
+                if (stream is { CanWrite: false, CanRead: false })
+                    throw RuntimeException.ClosedStream();              
+            }
+        }           
+
+        private void ThrowIfNonWritableStream()
+        {
+            if (_streamWrapper != null && _streamWrapper.IsReadOnly)
+                throw RuntimeException.NonWritableStream();
+        }  
         
         /// <summary>
         /// Создает объект для записи текста в файл или поток.
